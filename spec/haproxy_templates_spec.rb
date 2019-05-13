@@ -6,6 +6,7 @@ require 'yaml'
 require 'json'
 require 'haproxy-tools'
 require 'pry'
+require 'tempfile'
 
 describe 'haproxy' do
   let(:release_path) { File.join(File.dirname(__FILE__), '..') }
@@ -15,17 +16,17 @@ describe 'haproxy' do
   let(:default_manifest_properties) do
     {
       'ha_proxy' => {
-        'threads' => '1',
-        'nbproc' => '1',
-        'nbthread' => '1',
+        'threads' => 1,
+        'nbproc' => 1,
+        'nbthread' => 1,
         'syslog_server' => '/dev/log',
         'log_level' => 'info',
         'buffer_size_bytes' => '16384',
         'internal_only_domains' => [],
         'trusted_domain_cidrs' => '0.0.0.0/32',
         'strict_sni' => false,
-        'ssl_pem' => '~',
-        # 'crt_list' => '~',
+        'ssl_pem' => nil,
+        'crt_list' => nil,
         'enable_health_check_http' => false,
         'health_check_port' => '8080',
         'disable_http' => false,
@@ -85,21 +86,39 @@ describe 'haproxy' do
 
   describe 'config/haproxy.config' do
     let(:template) { job.template('config/haproxy.config') }
+    let(:config_file) { Tempfile.new(['config', '.cfg']) }
+    let(:manifest_properties) { default_manifest_properties }
+
+    before :each do
+      rendered_template = template.render(manifest_properties)
+      config_file.write(rendered_template)
+      config_file.rewind
+    end
+
+    after do
+      config_file.close
+      config_file.unlink
+    end
+
     describe 'when given a valid set of properties' do
-      it 'renders the template' do
-        foo = template.render(default_manifest_properties)
-        binding.pry
-        rendered_hash = HAProxy::Parser.new.parse(template.render(default_manifest_properties))
-        expect(rendered_hash).to eq(
-          'host' => '192.168.0.0'
-        )
+      it 'renders a valid haproxy template' do
+        expect{HAProxy::Config.parse_file(config_file.path)}.to_not raise_error
       end
     end
 
-    context 'when errorfiles are provided' do
+    describe 'when custom_http_error_files are provided' do
+      let(:manifest_properties) do
+        default_manifest_properties['ha_proxy']['custom_http_error_files'] = {
+            "503" => "content of errorfile 503",
+            "403" => "content of errorfile 403"
+        }
+        default_manifest_properties
+      end
 
-      it 'renders all errorfiles with theirs error statu' do
-
+      it 'set all errorfiles with theirs error status and location' do
+        rendered_hash = HAProxy::Config.parse_file(config_file.path)
+        expect(rendered_hash.backend('http-routers').config['errorfile 503']).to eq("/var/vcap/jobs/haproxy/errorfiles/custom503.http")
+        expect(rendered_hash.backend('http-routers').config['errorfile 403']).to eq("/var/vcap/jobs/haproxy/errorfiles/custom403.http")
       end
     end
   end
